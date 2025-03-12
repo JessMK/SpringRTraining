@@ -1,3 +1,5 @@
+# This activity will help understand the 
+
 # Load necessary libraries
 library(dplyr)
 library(readr)
@@ -6,12 +8,13 @@ library(arrow)
 library(haven)      # for SAS
 library(microbenchmark)   # for Timing
 library(stringi)
-library(ggplot)
 
 # Step 1: Create a synthetic dataset
-set.seed(42)  # For reproducibility
-n <- 1e6  # Number of rows
-state_abbreviations <- state.abb  # Built-in vector of US state abbreviations
+set.seed(42)                         # For reproducibility
+n <- 1e6                             # Number of rows
+state_abbreviations <- c(state.abb,  # Built-in vector of US state abbreviations
+                         "DC")       # Add DC to state abbreviations  
+                                               
 
 dataset <- tibble(
   Name = stri_rand_strings(n, 7, pattern = "[A-Za-z]"),
@@ -80,6 +83,7 @@ ggplot(dataset, aes(x = Race, y = Income, fill = Race)) +
   labs(title = "Income Distribution by Race", x = "Race", y = "Income") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+
 ## Mapping with shapefiles
 
 library(tigris)
@@ -90,8 +94,6 @@ library(sf)
 us_states <- states(cb = TRUE, year = 2023) %>% 
   st_as_sf()  # Convert to sf object
 
-## Aggregate Data by BirthState
-
 # Aggregate dataset by BirthState
 state_counts <- dataset %>%
   group_by(BirthState) %>%
@@ -99,11 +101,8 @@ state_counts <- dataset %>%
 
 # Merge with shapefile using state abbreviations
 us_states <- us_states %>%
-  shift_geometry() %>%
+  shift_geometry() %>%     # Shift to match Census coordinates
   left_join(state_counts, by = c("STUSPS" = "BirthState")) 
-
-# Replace NA counts with 0
-us_states$count[is.na(us_states$count)] <- 0
 
 ## Create the Map Using ggplot2
 
@@ -112,3 +111,53 @@ ggplot(us_states) +
   scale_fill_viridis_c(option = "plasma") +
   theme_minimal() +
   labs(title = "Distribution of Birth States", fill = "Count")
+
+
+# Make it more similar to our pop data
+
+# Load necessary libraries
+
+library(tidycensus)
+
+# Get actual state populations from the Census API
+#census_api_key("YOUR_CENSUS_API_KEY", install = TRUE, overwrite = TRUE)
+
+state_pops <- get_acs(geography = "state", 
+                      variables = "B01003_001", 
+                      vintage = 2024) %>%
+  select(NAME, population = estimate) %>%
+  mutate(BirthState = state.abb[match(NAME, state.name)]) %>%
+  filter(!is.na(BirthState))  # Remove territories not in state.abb
+
+# Normalize populations to probabilities
+state_pops2 <- state_pops %>%
+  mutate(prob = population / sum(population))
+
+# Generate BirthState using weighted probabilities
+dataset2 <- dataset %>%
+  mutate(BirthState = sample(state_pops2$BirthState, 
+                             n, replace = TRUE, 
+                             prob = state_pops2$prob))
+
+# Aggregate dataset by BirthState
+state_counts2 <- dataset2 %>%
+  group_by(BirthState) %>%
+  summarise(count = n())
+
+# Merge with shapefile using state abbreviations
+us_states2 <- us_states %>%
+  filter(!STUSPS %in% c('GU', 'VI', 'PR', 'AS', 'MP')) %>% # filter territories
+  shift_geometry() %>%                                     # Shift to match Census coordinates
+  left_join(state_counts2, by = c("STUSPS" = "BirthState")) 
+
+## Create the Map Using ggplot2
+
+ggplot(us_states2) +
+  geom_sf(aes(fill = desc(count.y)), color = "black") +
+  scale_fill_viridis_c(option = "plasma") +
+  theme_minimal() +
+  labs(title = "Distribution of Birth States with Census Proportions", fill = "Count")
+
+# Write out our shapefile
+
+st_write(us_states2, "us_states.shp")
